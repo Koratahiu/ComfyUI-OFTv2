@@ -2,7 +2,7 @@
 
 A custom auto-patch to support and load OFTv2 adapters until official ComfyUI support is added https://github.com/comfyanonymous/ComfyUI/issues/10695
 
-When you start comfyui, it will automatically patch it to run OFTv2 adapters as any normal LoRA.
+When you start ComfyUI, it will automatically patch the system to load OFTv2 adapters like any standard LoRA.
 
 ---
 
