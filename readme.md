@@ -7,4 +7,4 @@ Includes the following nodes:
 - "Load OFTv2" (Model/Clip)
 - "Load OFTv2 Model Only" (Model)
 
-They work the same LoRA loader node, except they support OFTv2.
+They work the same way as LoRA loader node, except they support OFTv2.
