@@ -5,12 +5,12 @@
 @description: A custom node to support and load OFTv2 adapters.
 """
 
-from .node import oftv2_loader
+import comfy.weight_adapter
+from .node.oftv2_loader import OFTv2Adapter
 
-NODE_CLASS_MAPPINGS = {
-    **oftv2_loader.NODE_CLASS_MAPPINGS,
-}
+# Register the OFTv2Adapter globally with ComfyUI's weight adapter system
+comfy.weight_adapter.adapters.append(OFTv2Adapter)
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    **oftv2_loader.NODE_DISPLAY_NAME_MAPPINGS,
-}
+
+NODE_CLASS_MAPPINGS = {}
+NODE_DISPLAY_NAME_MAPPINGS = {}
