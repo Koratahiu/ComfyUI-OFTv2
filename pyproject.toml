@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-OFTv2"
 description = "A custom node to support and load OFTv2 adapters"
-version = "1.0.0"
+version = "1.1.0"
 
 [project.urls]
 Repository = "https://github.com/Koratahiu/ComfyUI-OFTv2"
