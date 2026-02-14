@@ -19,6 +19,7 @@ class OFTRotationUtil:
         eps: float = 6e-5,
         use_cayley_neumann: bool = True,
         num_cayley_neumann_terms: int = 5,
+        scaled_oft: bool = False,
     ):
         self.weight = weight
         self.block_size = block_size
@@ -26,6 +27,7 @@ class OFTRotationUtil:
         self.eps = eps
         self.use_cayley_neumann = use_cayley_neumann
         self.num_cayley_neumann_terms = num_cayley_neumann_terms
+        self.use_scaled_oft = scaled_oft
         self.rows, self.cols = torch.triu_indices(self.block_size, self.block_size, 1)
 
     def _get_triu_indices(self, device):
@@ -85,7 +87,13 @@ class OFTRotationUtil:
             with torch.no_grad():
                 projected_weight = self._project_batch()
                 weight.copy_(projected_weight)
-        return self._cayley_batch(weight)
+        if self.use_scaled_oft:
+            # Apply the scaled_oft factor: weight / sqrt(n_elements)
+            n_elements = weight.shape[-1]
+            effective_weight = weight / (n_elements ** 0.5)
+        else:
+            effective_weight = weight
+        return self._cayley_batch(effective_weight)
 
 
 class OFTv2Adapter(WeightAdapterBase):
@@ -107,10 +115,15 @@ class OFTv2Adapter(WeightAdapterBase):
         if loaded_keys is None:
             loaded_keys = set()
         oft_r_weight_name = f"{x}.oft_R.weight"
+        scaled_oft_flag_name = f"{x}.oft_R.scaled_oft"
         if oft_r_weight_name in lora:
             oft_r_weight = lora[oft_r_weight_name]
             loaded_keys.add(oft_r_weight_name)
-            weights = (oft_r_weight, alpha, dora_scale)
+            is_scaled = False
+            if scaled_oft_flag_name in lora:
+                is_scaled = True
+                loaded_keys.add(scaled_oft_flag_name)
+            weights = (oft_r_weight, alpha, dora_scale, is_scaled)
             return cls(loaded_keys, weights)
         return None
 
@@ -128,11 +141,11 @@ class OFTv2Adapter(WeightAdapterBase):
         if strength == 0.0:
             return weight
 
-        oft_r_weight_orig, alpha, dora_scale = self.weights
+        oft_r_weight_orig, alpha, dora_scale, is_scaled = self.weights
 
         try:
             oft_r_weight_processed = oft_r_weight_orig.to(weight.device, dtype=intermediate_dtype)
-            
+
             r_loaded, n_elements = oft_r_weight_processed.shape
             block_size_f = (1 + (1 + 8 * n_elements) ** 0.5) / 2
             if abs(block_size_f - round(block_size_f)) > 1e-6:
@@ -156,7 +169,7 @@ class OFTv2Adapter(WeightAdapterBase):
                 return weight
 
             # Pass the unscaled weight to the utility to get the full rotation matrix
-            util = OFTRotationUtil(oft_r_weight_processed, block_size)
+            util = OFTRotationUtil(oft_r_weight_processed, block_size, scaled_oft=is_scaled)
             orth_rotate = util.get_rotation_matrix()
 
 
