@@ -123,6 +123,15 @@ class OFTv2Adapter(WeightAdapterBase):
             if scaled_oft_flag_name in lora:
                 is_scaled = True
                 loaded_keys.add(scaled_oft_flag_name)
+
+            # DoRA-OFT
+            dora_scale_name = f"{x}.dora_scale"
+            if dora_scale_name in lora:
+                loaded_keys.add(dora_scale_name)
+            initial_norm_name = f"{x}.initial_norm"
+            if initial_norm_name in lora:
+                loaded_keys.add(initial_norm_name)
+
             weights = (oft_r_weight, alpha, dora_scale, is_scaled)
             return cls(loaded_keys, weights)
         return None
@@ -206,7 +215,19 @@ class OFTv2Adapter(WeightAdapterBase):
             lora_diff = w_diff_reshaped.reshape(base_weight.shape)
 
             if dora_scale is not None:
-                weight = weight_decompose(dora_scale, weight, lora_diff, strength, 1.0, intermediate_dtype, function)
+                # OFT inherently preserves the norm. 
+                # W_final = (W_rotated) * (dora_scale / norm(W_orig))
+                if base_weight.dim() == 4:
+                    norm = torch.norm(base_weight.reshape(base_weight.shape[0], -1), dim=1).reshape(base_weight.shape[0], 1, 1, 1)
+                else: # Linear
+                    norm = torch.norm(base_weight, dim=1, keepdim=True)
+                # W_rotated is original weight plus the OFT rotation difference
+                W_rotated = base_weight + lora_diff
+                # Scale the rotated weights to match the learned DoRA magnitude
+                scale = dora_scale.to(W_rotated.device, dtype=W_rotated.dtype) / norm
+                W_dora = W_rotated * scale
+                final_diff = W_dora - base_weight
+                weight += function((final_diff * strength).type(weight.dtype))
             else:
                 weight += function((lora_diff * strength).type(weight.dtype))
 
