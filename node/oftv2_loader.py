@@ -128,11 +128,13 @@ class OFTv2Adapter(WeightAdapterBase):
             dora_scale_name = f"{x}.dora_scale"
             if dora_scale_name in lora:
                 loaded_keys.add(dora_scale_name)
+            initial_norm = None
             initial_norm_name = f"{x}.initial_norm"
             if initial_norm_name in lora:
+                initial_norm = lora[initial_norm_name]
                 loaded_keys.add(initial_norm_name)
 
-            weights = (oft_r_weight, alpha, dora_scale, is_scaled)
+            weights = (oft_r_weight, alpha, dora_scale, is_scaled, initial_norm)
             return cls(loaded_keys, weights)
         return None
 
@@ -150,7 +152,7 @@ class OFTv2Adapter(WeightAdapterBase):
         if strength == 0.0:
             return weight
 
-        oft_r_weight_orig, alpha, dora_scale, is_scaled = self.weights
+        oft_r_weight_orig, alpha, dora_scale, is_scaled, initial_norm = self.weights
 
         try:
             oft_r_weight_processed = oft_r_weight_orig.to(weight.device, dtype=intermediate_dtype)
@@ -215,16 +217,22 @@ class OFTv2Adapter(WeightAdapterBase):
             lora_diff = w_diff_reshaped.reshape(base_weight.shape)
 
             if dora_scale is not None:
-                # OFT inherently preserves the norm. 
-                # W_final = (W_rotated) * (dora_scale / norm(W_orig))
-                if base_weight.dim() == 4:
+                # Reshape dora_scale to [out_features, 1, ...] for correct per-row broadcasting
+                dora_scale = dora_scale.reshape(base_weight.shape[0], *([1] * (base_weight.dim() - 1)))
+                dora_scale = dora_scale.to(weight.device, dtype=intermediate_dtype)
+                # Use initial_norm from training when available, since dora_scale
+                # was learned relative to the training base model's norms.
+                if initial_norm is not None:
+                    norm = initial_norm.reshape(base_weight.shape[0], *([1] * (base_weight.dim() - 1)))
+                    norm = norm.to(weight.device, dtype=intermediate_dtype)
+                elif base_weight.dim() == 4:
                     norm = torch.norm(base_weight.reshape(base_weight.shape[0], -1), dim=1).reshape(base_weight.shape[0], 1, 1, 1)
                 else: # Linear
                     norm = torch.norm(base_weight, dim=1, keepdim=True)
                 # W_rotated is original weight plus the OFT rotation difference
                 W_rotated = base_weight + lora_diff
                 # Scale the rotated weights to match the learned DoRA magnitude
-                scale = dora_scale.to(W_rotated.device, dtype=W_rotated.dtype) / norm
+                scale = dora_scale / norm
                 W_dora = W_rotated * scale
                 final_diff = W_dora - base_weight
                 weight += function((final_diff * strength).type(weight.dtype))
