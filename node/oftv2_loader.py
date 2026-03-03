@@ -1,4 +1,5 @@
 import logging
+import math
 import torch
 from typing import Optional
 
@@ -88,9 +89,9 @@ class OFTRotationUtil:
                 projected_weight = self._project_batch()
                 weight.copy_(projected_weight)
         if self.use_scaled_oft:
-            # Apply the scaled_oft factor: weight / sqrt(n_elements)
-            n_elements = weight.shape[-1]
-            effective_weight = weight / (n_elements ** 0.5)
+            # Apply the scaled_oft factor: weight / (2 * sqrt(block_size - 1))
+            scaling_factor = 2 * math.sqrt(self.block_size - 1)
+            effective_weight = weight / scaling_factor
         else:
             effective_weight = weight
         return self._cayley_batch(effective_weight)
