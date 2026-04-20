@@ -167,7 +167,7 @@ class OFTv2Adapter(WeightAdapterBase):
 
             base_weight = original_weight if original_weight is not None else weight
             out_features, *in_dims_tuple = base_weight.shape
-            in_features = torch.prod(torch.tensor(in_dims_tuple)).item()
+            in_features = math.prod(in_dims_tuple)
 
             if in_features % block_size != 0:
                 logging.warning(f"OFTv2: in_features ({in_features}) not divisible by block_size ({block_size}) for {key}.")
