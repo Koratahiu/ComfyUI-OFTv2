@@ -233,7 +233,9 @@ class OFTv2Adapter(WeightAdapterBase):
                 # W_rotated is original weight plus the OFT rotation difference
                 W_rotated = base_weight + lora_diff
                 # Scale the rotated weights to match the learned DoRA magnitude
-                scale = dora_scale / norm
+                # Add epsilon to prevent division by zero
+                eps = torch.finfo(norm.dtype).eps
+                scale = dora_scale / (norm + eps)
                 W_dora = W_rotated * scale
                 final_diff = W_dora - base_weight
                 weight += function((final_diff * strength).type(weight.dtype))
