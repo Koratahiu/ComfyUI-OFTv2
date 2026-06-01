@@ -136,13 +136,13 @@ class OFTv2Adapter(WeightAdapterBase):
                 loaded_keys.add(initial_norm_name)
 
             # DoRA-OFT (current)
-            dora_multiplier_name = f"{x}.dora_multiplier"
-            dora_multiplier = None
-            if dora_multiplier_name in lora:
-                dora_multiplier = lora[dora_multiplier_name]
-                loaded_keys.add(dora_multiplier_name)
+            dora_log_multiplier_name = f"{x}.dora_log_multiplier"
+            dora_log_multiplier = None
+            if dora_log_multiplier_name in lora:
+                dora_log_multiplier = lora[dora_log_multiplier_name]
+                loaded_keys.add(dora_log_multiplier_name)
 
-            weights = (oft_r_weight, alpha, dora_scale, is_scaled, initial_norm, dora_multiplier)
+            weights = (oft_r_weight, alpha, dora_scale, is_scaled, initial_norm, dora_log_multiplier)
             return cls(loaded_keys, weights)
         return None
 
@@ -160,7 +160,7 @@ class OFTv2Adapter(WeightAdapterBase):
         if strength == 0.0:
             return weight
 
-        oft_r_weight_orig, alpha, dora_scale, is_scaled, initial_norm, dora_multiplier = self.weights
+        oft_r_weight_orig, alpha, dora_scale, is_scaled, initial_norm, dora_log_multiplier = self.weights
 
         try:
             oft_r_weight_processed = oft_r_weight_orig.to(weight.device, dtype=intermediate_dtype)
@@ -246,12 +246,12 @@ class OFTv2Adapter(WeightAdapterBase):
                 W_dora = W_rotated * scale
                 final_diff = W_dora - base_weight
                 weight += function((final_diff * strength).type(weight.dtype))
-            elif dora_multiplier is not None:
+            elif dora_log_multiplier is not None:
                 # W_rotated is original weight plus the OFT rotation difference
                 W_rotated = base_weight + lora_diff
-                dora_multiplier = dora_multiplier.reshape(base_weight.shape[0], *([1] * (base_weight.dim() - 1)))
-                dora_multiplier = dora_multiplier.to(weight.device, dtype=intermediate_dtype)
-                W_dora = W_rotated * dora_multiplier
+                dora_log_multiplier = dora_log_multiplier.reshape(base_weight.shape[0], *([1] * (base_weight.dim() - 1)))
+                dora_log_multiplier = dora_log_multiplier.to(weight.device, dtype=intermediate_dtype)
+                W_dora = W_rotated *  torch.exp(dora_log_multiplier)
                 final_diff = W_dora - base_weight
                 weight += function((final_diff * strength).type(weight.dtype))
             else:
