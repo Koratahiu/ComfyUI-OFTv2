@@ -249,9 +249,12 @@ class OFTv2Adapter(WeightAdapterBase):
             elif dora_log_multiplier is not None:
                 # W_rotated is original weight plus the OFT rotation difference
                 W_rotated = base_weight + lora_diff
-                dora_log_multiplier = dora_log_multiplier.reshape(base_weight.shape[0], *([1] * (base_weight.dim() - 1)))
                 dora_log_multiplier = dora_log_multiplier.to(weight.device, dtype=intermediate_dtype)
-                W_dora = W_rotated *  torch.exp(dora_log_multiplier)
+                if base_weight.dim() == 4: # Conv2d
+                    multiplier = torch.exp(dora_log_multiplier).view(-1, 1, 1, 1)
+                else:
+                    multiplier = torch.exp(dora_log_multiplier).view(-1, 1)
+                W_dora = W_rotated * multiplier
                 final_diff = W_dora - base_weight
                 weight += function((final_diff * strength).type(weight.dtype))
             else:
