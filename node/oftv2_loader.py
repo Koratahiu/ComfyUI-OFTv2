@@ -21,6 +21,7 @@ class OFTRotationUtil:
         use_cayley_neumann: bool = True,
         num_cayley_neumann_terms: int = 5,
         scaled_oft: bool = False,
+        clipped_oft: Optional[float] = None,
     ):
         self.weight = weight
         self.block_size = block_size
@@ -29,6 +30,7 @@ class OFTRotationUtil:
         self.use_cayley_neumann = use_cayley_neumann
         self.num_cayley_neumann_terms = num_cayley_neumann_terms
         self.use_scaled_oft = scaled_oft
+        self.clipped_oft = clipped_oft
         self.rows, self.cols = torch.triu_indices(self.block_size, self.block_size, 1)
 
     def _get_triu_indices(self, device):
@@ -64,6 +66,29 @@ class OFTRotationUtil:
         b, _ = Q.shape
         previous_dtype = Q.dtype
         Q_skew = self._pytorch_skew_symmetric(Q)
+
+        if self.use_cayley_neumann and self.clipped_oft is not None:
+            # Compute Spectral Norm using Power Iteration
+            Q_skew_f32 = Q_skew.to(torch.float32)
+            b_size, n_size, _ = Q_skew_f32.shape
+            # Initialize a random vector
+            v = torch.randn(b_size, n_size, 1, device=Q_skew_f32.device, dtype=torch.float32)
+            v = v / torch.linalg.vector_norm(v, dim=1, keepdim=True).clamp_min(1e-12)
+            # 2 iterations is more than enough to converge to the dominant singular value
+            for _ in range(2):
+                # u = Q * v
+                u_raw = torch.bmm(Q_skew_f32, v)
+                u = u_raw / torch.linalg.vector_norm(u_raw, dim=1, keepdim=True).clamp_min(1e-12)
+                # v = Q.T * u
+                v_raw = torch.bmm(Q_skew_f32.mT, u)
+                v = v_raw / torch.linalg.vector_norm(v_raw, dim=1, keepdim=True).clamp_min(1e-12)
+            # sigma = u^T * Q * v
+            u_raw_grad = torch.bmm(Q_skew_f32, v)
+            sigma = torch.sum(u * u_raw_grad, dim=1, keepdim=True).view(b, 1, 1).to(Q_skew.dtype)
+
+            max_norm = 0.999 * self.clipped_oft
+            Q_skew = Q_skew * (max_norm / torch.clamp(sigma, min=max_norm))
+
         if self.use_cayley_neumann:
             R = torch.eye(self.block_size, device=Q.device, dtype=Q.dtype).repeat(b, 1, 1)
             if self.num_cayley_neumann_terms > 1:
@@ -125,6 +150,12 @@ class OFTv2Adapter(WeightAdapterBase):
                 is_scaled = True
                 loaded_keys.add(scaled_oft_flag_name)
 
+            clipped_oft = None
+            clipped_oft_name = f"{x}.oft_R.clipped_oft"
+            if clipped_oft_name in lora:
+                clipped_oft = lora[clipped_oft_name].item()
+                loaded_keys.add(clipped_oft_name)
+
             # DoRA-OFT (legacy for backward support)
             dora_scale_name = f"{x}.dora_scale"
             if dora_scale_name in lora:
@@ -142,7 +173,7 @@ class OFTv2Adapter(WeightAdapterBase):
                 dora_log_multiplier = lora[dora_log_multiplier_name]
                 loaded_keys.add(dora_log_multiplier_name)
 
-            weights = (oft_r_weight, alpha, dora_scale, is_scaled, initial_norm, dora_log_multiplier)
+            weights = (oft_r_weight, alpha, dora_scale, is_scaled, initial_norm, dora_log_multiplier, clipped_oft)
             return cls(loaded_keys, weights)
         return None
 
@@ -160,7 +191,7 @@ class OFTv2Adapter(WeightAdapterBase):
         if strength == 0.0:
             return weight
 
-        oft_r_weight_orig, alpha, dora_scale, is_scaled, initial_norm, dora_log_multiplier = self.weights
+        oft_r_weight_orig, alpha, dora_scale, is_scaled, initial_norm, dora_log_multiplier, clipped_oft = self.weights
 
         try:
             oft_r_weight_processed = oft_r_weight_orig.to(weight.device, dtype=intermediate_dtype)
@@ -188,7 +219,12 @@ class OFTv2Adapter(WeightAdapterBase):
                 return weight
 
             # Pass the unscaled weight to the utility to get the full rotation matrix
-            util = OFTRotationUtil(oft_r_weight_processed, block_size, scaled_oft=is_scaled)
+            util = OFTRotationUtil(
+                oft_r_weight_processed, 
+                block_size, 
+                scaled_oft=is_scaled,
+                clipped_oft=clipped_oft,
+            )
             orth_rotate = util.get_rotation_matrix()
 
 
