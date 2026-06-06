@@ -21,7 +21,7 @@ class OFTRotationUtil:
         use_cayley_neumann: bool = True,
         num_cayley_neumann_terms: int = 5,
         scaled_oft: bool = False,
-        clipped_oft: Optional[float] = None,
+        clipped_oft: Optional[torch.Tensor] = None,
     ):
         self.weight = weight
         self.block_size = block_size
@@ -153,7 +153,7 @@ class OFTv2Adapter(WeightAdapterBase):
             clipped_oft = None
             clipped_oft_name = f"{x}.oft_R.clipped_oft"
             if clipped_oft_name in lora:
-                clipped_oft = lora[clipped_oft_name].item()
+                clipped_oft = lora[clipped_oft_name]
                 loaded_keys.add(clipped_oft_name)
 
             # DoRA-OFT (legacy for backward support)
@@ -195,6 +195,9 @@ class OFTv2Adapter(WeightAdapterBase):
 
         try:
             oft_r_weight_processed = oft_r_weight_orig.to(weight.device, dtype=intermediate_dtype)
+
+            if clipped_oft is not None:
+                clipped_oft = clipped_oft.to(weight.device, dtype=intermediate_dtype)
 
             r_loaded, n_elements = oft_r_weight_processed.shape
             block_size_f = (1 + (1 + 8 * n_elements) ** 0.5) / 2
