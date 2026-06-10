@@ -67,7 +67,7 @@ class OFTRotationUtil:
         previous_dtype = Q.dtype
         Q_skew = self._pytorch_skew_symmetric(Q)
 
-        if self.use_cayley_neumann and self.clipped_oft is not None:
+        if self.clipped_oft is not None:
             # Compute Spectral Norm using Power Iteration
             Q_skew_f32 = Q_skew.to(torch.float32)
             b_size, n_size, _ = Q_skew_f32.shape
@@ -86,7 +86,7 @@ class OFTRotationUtil:
             u_raw_grad = torch.bmm(Q_skew_f32, v)
             sigma = torch.sum(u * u_raw_grad, dim=1, keepdim=True).view(b, 1, 1).to(Q_skew.dtype)
 
-            max_norm = 0.999 * self.clipped_oft
+            max_norm = self.clipped_oft
             Q_skew = Q_skew * (max_norm / torch.clamp(sigma, min=max_norm))
 
         if self.use_cayley_neumann:
