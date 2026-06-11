@@ -22,12 +22,14 @@ class OFTRotationUtil:
         num_cayley_neumann_terms: int = 5,
         scaled_oft: bool = False,
         clipped_oft: Optional[torch.Tensor] = None,
+        oft_cans: bool = False,
     ):
         self.weight = weight
         self.block_size = block_size
         self.coft = coft
         self.eps = eps
-        self.use_cayley_neumann = use_cayley_neumann
+        self.oft_cans = oft_cans
+        self.use_cayley_neumann = use_cayley_neumann and not oft_cans
         self.num_cayley_neumann_terms = num_cayley_neumann_terms
         self.use_scaled_oft = scaled_oft
         self.clipped_oft = clipped_oft
@@ -62,6 +64,56 @@ class OFTRotationUtil:
         out = torch.where(mask, oft_R, origin_matrix + eps * (diff / norm_diff))
         return self._pytorch_skew_symmetric_inv(out)
 
+    def _cans_newton_schulz_iteration(
+        self,
+        G: torch.Tensor,
+        steps: int = 7,
+        eps: float = 1e-7,
+    ) -> torch.Tensor:
+        """
+        Chebyshev-Optimized Newton-Schulz iteration with a dynamically computed Chebyshev lower bound.
+        Optimized for G = I + Q (where Q is skew-symmetric).
+        """
+        original_dtype = G.dtype
+        X = G
+
+        # Max row sum is guaranteed to be >= the maximum singular value of X.
+        g_norm = X.abs().sum(dim=-1, keepdim=True).amax(dim=-2, keepdim=True).clamp_min(eps)
+        X = X / g_norm
+
+        # Since min_singular_value(I + Q) >= 1, the min_singular_value of normalized X
+        # is guaranteed to be >= 1 / ||G||_F.
+        # We clamp it to prevent numerical edge cases (e.g. extremely large norms).
+        lower_bound = (1.0 / g_norm.detach()).clamp(min=1e-5, max=0.9)
+        upper_bound = 1
+
+        for _ in range(steps):
+            lb, ub = lower_bound, upper_bound
+            lb_ub = lb * ub
+            e_sq = (lb**2 + lb_ub + ub**2) / 3.0
+            K = 2.0 * e_sq**1.5
+            L = lb_ub * (lb + ub)
+            denom = K + L
+            alpha = 6.0 / denom
+            c1 = alpha * e_sq
+            c3 = -alpha / 3.0
+
+            A = torch.bmm(X, X.mT)
+            X = c1 * X + c3 * torch.bmm(A, X)
+
+            # Dynamically update bounds for the next step
+            eps_val = (K - L) / denom
+
+            # bmm acts as an opaque boundary, forcing Inductor to
+            # materialize eps_val and severing the exponential AST tree.
+            # Shape is (B, 1, 1), so ones_like acts as an identity.
+            eps_val = torch.bmm(eps_val, torch.ones_like(eps_val))
+
+            lower_bound = 1 - eps_val
+            upper_bound = 1 + eps_val
+
+        return X.to(original_dtype)
+
     def _cayley_batch(self, Q: torch.Tensor) -> torch.Tensor:
         b, _ = Q.shape
         previous_dtype = Q.dtype
@@ -89,7 +141,16 @@ class OFTRotationUtil:
             max_norm = self.clipped_oft
             Q_skew = Q_skew * (max_norm / torch.clamp(sigma, min=max_norm))
 
-        if self.use_cayley_neumann:
+        if self.oft_cans:
+            id_mat = torch.eye(self.block_size, device=Q.device, dtype=Q.dtype).repeat(b, 1, 1)
+            G = id_mat + Q_skew
+            # Empirically, BF16 requires 5 steps to converge to ortho error ~1e-2 (its limit)
+            # While FP32 takes 7 steps to converge to ortho error ~1e-6
+            steps = 5 if G.dtype == torch.bfloat16 else 7
+            R_half = self._cans_newton_schulz_iteration(G=G, steps=steps)
+            # Squaring the matrix doubles the rotation range from (-90°, 90°) to (-180°, 180°) and matches Cayley (I + 2Q).
+            R = torch.bmm(R_half, R_half)
+        elif self.use_cayley_neumann:
             R = torch.eye(self.block_size, device=Q.device, dtype=Q.dtype).repeat(b, 1, 1)
             if self.num_cayley_neumann_terms > 1:
                 R.add_(Q_skew, alpha=2.0)
@@ -156,6 +217,12 @@ class OFTv2Adapter(WeightAdapterBase):
                 clipped_oft = lora[clipped_oft_name]
                 loaded_keys.add(clipped_oft_name)
 
+            is_cans = False
+            cans_oft_name = f"{x}.oft_R.cans_oft"
+            if cans_oft_name in lora:
+                is_cans = True
+                loaded_keys.add(cans_oft_name)
+
             # DoRA-OFT (legacy for backward support)
             dora_scale_name = f"{x}.dora_scale"
             if dora_scale_name in lora:
@@ -173,7 +240,7 @@ class OFTv2Adapter(WeightAdapterBase):
                 dora_log_multiplier = lora[dora_log_multiplier_name]
                 loaded_keys.add(dora_log_multiplier_name)
 
-            weights = (oft_r_weight, alpha, dora_scale, is_scaled, initial_norm, dora_log_multiplier, clipped_oft)
+            weights = (oft_r_weight, alpha, dora_scale, is_scaled, initial_norm, dora_log_multiplier, clipped_oft, is_cans)
             return cls(loaded_keys, weights)
         return None
 
@@ -191,7 +258,7 @@ class OFTv2Adapter(WeightAdapterBase):
         if strength == 0.0:
             return weight
 
-        oft_r_weight_orig, alpha, dora_scale, is_scaled, initial_norm, dora_log_multiplier, clipped_oft = self.weights
+        oft_r_weight_orig, alpha, dora_scale, is_scaled, initial_norm, dora_log_multiplier, clipped_oft, is_cans = self.weights
 
         try:
             oft_r_weight_processed = oft_r_weight_orig.to(weight.device, dtype=intermediate_dtype)
@@ -227,6 +294,7 @@ class OFTv2Adapter(WeightAdapterBase):
                 block_size, 
                 scaled_oft=is_scaled,
                 clipped_oft=clipped_oft,
+                oft_cans=is_cans,
             )
             orth_rotate = util.get_rotation_matrix()
 
